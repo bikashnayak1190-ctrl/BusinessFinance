@@ -1,11 +1,14 @@
 name: Build and verify portable Windows EXE
+
 on:
   workflow_dispatch:
   push:
     branches: [main, master]
   pull_request:
+
 permissions:
   contents: read
+
 jobs:
   windows:
     runs-on: windows-2022
@@ -15,19 +18,23 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+
       - name: Compile and run financial integration checks on Windows
         run: |
           New-Item -ItemType Directory -Force artifacts | Out-Null
           dotnet run --project Finance.Tests/Finance.Tests.csproj --configuration Release 2>&1 | Tee-Object artifacts/Windows-Financial-Test-Results.txt
           if ($LASTEXITCODE -ne 0) { throw 'Financial integration checks failed.' }
+
       - name: Publish one self-contained EXE
         run: |
           dotnet publish Finance.Desktop/Finance.Desktop.csproj --configuration Release -p:PublishProfile=PortableSingleExe --output publish
           if ($LASTEXITCODE -ne 0) { throw 'Windows publish failed.' }
           if (!(Test-Path publish/BusinessFinance.exe)) { throw 'EXE missing.' }
+
       - name: Verify EXE in an isolated folder without companion DLLs
         run: |
           $isolated = Join-Path $env:RUNNER_TEMP 'Business Finance Single EXE Check'
@@ -48,6 +55,7 @@ jobs:
           Copy-Item $exe artifacts/BusinessFinance.exe
           Get-FileHash artifacts/BusinessFinance.exe -Algorithm SHA256 | Format-List | Out-File artifacts/SHA256.txt
           Copy-Item RELEASE_NOTES.md artifacts/
+
       - name: Upload portable EXE and verification evidence
         uses: actions/upload-artifact@v4
         with:
@@ -55,6 +63,7 @@ jobs:
           path: artifacts/
           if-no-files-found: error
           retention-days: 30
+
       - name: Keep diagnostic reports if checks fail
         if: failure()
         uses: actions/upload-artifact@v4
