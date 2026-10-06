@@ -1,0 +1,64 @@
+name: Build and verify portable Windows EXE
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Compile and run financial integration checks on Windows
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          dotnet run --project Finance.Tests/Finance.Tests.csproj --configuration Release 2>&1 | Tee-Object artifacts/Windows-Financial-Test-Results.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Financial integration checks failed.' }
+      - name: Publish one self-contained EXE
+        run: |
+          dotnet publish Finance.Desktop/Finance.Desktop.csproj --configuration Release -p:PublishProfile=PortableSingleExe --output publish
+          if ($LASTEXITCODE -ne 0) { throw 'Windows publish failed.' }
+          if (!(Test-Path publish/BusinessFinance.exe)) { throw 'EXE missing.' }
+      - name: Verify EXE in an isolated folder without companion DLLs
+        run: |
+          $isolated = Join-Path $env:RUNNER_TEMP 'Business Finance Single EXE Check'
+          New-Item -ItemType Directory -Force $isolated | Out-Null
+          Copy-Item publish/BusinessFinance.exe $isolated
+          $exe = Join-Path $isolated 'BusinessFinance.exe'
+          $report = Join-Path $env:GITHUB_WORKSPACE 'artifacts/Windows-UI-Smoke.txt'
+          $env:DOTNET_ROOT = Join-Path $isolated 'no-installed-runtime'
+          $env:DOTNET_ROOT_X64 = $env:DOTNET_ROOT
+          $env:DOTNET_MULTILEVEL_LOOKUP = '0'
+          $process = Start-Process -FilePath $exe -ArgumentList @('--smoke-test', ('"' + $report + '"')) -PassThru
+          if (!$process.WaitForExit(90000)) {
+            $process.Kill()
+            throw 'EXE smoke check timed out.'
+          }
+          if ($process.ExitCode -ne 0) { throw 'EXE smoke check failed; inspect Windows-UI-Smoke.txt.' }
+          if (!(Test-Path $report)) { throw 'Smoke test produced no report.' }
+          Copy-Item $exe artifacts/BusinessFinance.exe
+          Get-FileHash artifacts/BusinessFinance.exe -Algorithm SHA256 | Format-List | Out-File artifacts/SHA256.txt
+          Copy-Item RELEASE_NOTES.md artifacts/
+      - name: Upload portable EXE and verification evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: BusinessFinance-Windows-x64-Portable-Acceptance
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Keep diagnostic reports if checks fail
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-failure-diagnostics
+          path: artifacts/
+          if-no-files-found: ignore
